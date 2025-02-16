@@ -101,6 +101,109 @@ ORDER BY b.City_id;
 ```
 
 ### 3. ETL Process & Analytical Data Model
+A **denormalized data model** was created for optimized analytical queries, reducing the need for joins. The ETL (Extract, Transform, Load) process was implemented using Python and Pandas to efficiently process and transfer data.
+
+#### **ETL Code Implementation**
+```python
+import os
+import pandas as pd
+from clickhouse_driver import Client
+
+client = Client('localhost')  
+
+# Extract Data from OLTP Tables
+def extract_data():
+    transactions = pd.DataFrame(client.execute("SELECT * FROM Transactions"), 
+                                columns=['Transaction_ID', 'Amount', 'Transaction_TimeStamp', 'Unix_Time', 'Is_Fraud', 'Cust_id', 'Merchant_id'])
+    
+    customers = pd.DataFrame(client.execute("SELECT * FROM Customer"), 
+                             columns=['Cust_ID', 'First_Name', 'Last_Name', 'Credit_Card_Number', 'Gender', 'Job', 'Date_Of_Birth', 'ADDR_id'])
+
+    merchants = pd.DataFrame(client.execute("SELECT * FROM Merchant"), 
+                             columns=['Merchant_ID', 'Merchant_Name', 'Lat', 'Long', 'Category_id'])
+
+    categories = pd.DataFrame(client.execute("SELECT * FROM Category"), 
+                              columns=['Category_id', 'Category_name'])
+
+    addresses = pd.DataFrame(client.execute("SELECT * FROM Address"), 
+                             columns=['ADDR_id', 'Street', 'Zip', 'Lat', 'Long', 'City_id'])
+
+    cities = pd.DataFrame(client.execute("SELECT * FROM City"), 
+                          columns=['City_id', 'City_name', 'State', 'City_population'])
+
+    return transactions, customers, merchants, categories, addresses, cities
+
+
+# Transform Data
+def transform_data(transactions, customers, merchants, categories, addresses, cities):
+    # Merge transactions with customers
+    df = transactions.merge(customers, left_on='Cust_id', right_on='Cust_ID', how='left')
+
+    # Merge with merchants
+    df = df.merge(merchants, left_on='Merchant_id', right_on='Merchant_ID', how='left')
+
+    # Merge with categories
+    df = df.merge(categories, left_on='Category_id', right_on='Category_id', how='left')
+
+    # Merge with addresses
+    df = df.merge(addresses, left_on='ADDR_id', right_on='ADDR_id', how='left')
+
+    # Merge with cities
+    df = df.merge(cities, left_on='City_id', right_on='City_id', how='left')
+
+    # Convert Date_Of_Birth to Age
+    df['Age'] = (pd.to_datetime('today') - pd.to_datetime(df['Date_Of_Birth'], errors='coerce')).dt.days // 365
+
+    # Select only necessary columns
+    df = df[['Transaction_ID', 'Amount', 'Transaction_TimeStamp', 'Unix_Time', 'Is_Fraud', 
+             'Cust_ID', 'First_Name', 'Last_Name', 'Gender', 'Age', 'Job',
+             'Merchant_ID', 'Merchant_Name', 'Category_name',
+             'City_name', 'State', 'Zip', 'Lat_x', 'Long_x']]
+
+    # Rename Lat and Long columns
+    df.rename(columns={'Lat_x': 'Lat', 'Long_x': 'Long'}, inplace=True)
+
+    # Ensure Lat and Long are floats and handle missing values
+    df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce').fillna(0.0)
+    df['Long'] = pd.to_numeric(df['Long'], errors='coerce').fillna(0.0)
+
+    return df
+
+
+# Load Data into ClickHouse
+def load_data(df):
+    # Convert dataframe to list of tuples for ClickHouse batch insert
+    data_tuples = [tuple(row) for row in df.itertuples(index=False, name=None)]
+    
+    insert_query = """
+    INSERT INTO transactions_analytics (
+        Transaction_ID, Amount, Transaction_TimeStamp, Unix_Time, Is_Fraud,
+        Cust_ID, First_Name, Last_Name, Gender, Age, Job,
+        Merchant_ID, Merchant_Name, Category_name,
+        City_name, State, Zip, Lat, Long
+    ) VALUES
+    """
+    
+    client.execute(insert_query, data_tuples)
+    print("Data successfully loaded into ClickHouse!")
+
+# Run ETL Pipeline
+if __name__ == "__main__":
+    print("Starting ETL process...")
+    
+    # Step 1: Extract Data
+    transactions, customers, merchants, categories, addresses, cities = extract_data()
+    print("Data extracted successfully.")
+
+    # Step 2: Transform Data
+    analytics_data = transform_data(transactions, customers, merchants, categories, addresses, cities)
+    print("Data transformation completed.")
+
+    # Step 3: Load Data
+    load_data(analytics_data)
+    print("ETL process finished successfully!")
+```
+
 A **denormalized data model** was created for optimized analytical queries, reducing the need for joins:
 
 ```sql
@@ -146,6 +249,7 @@ CREATE TABLE transactions_analytics
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(Transaction_TimeStamp)
 ORDER BY (Transaction_TimeStamp, Cust_ID, Merchant_ID);
+
 ```
 
 ### 4. Data Visualization with Metabase
@@ -167,9 +271,4 @@ ORDER BY (Transaction_TimeStamp, Cust_ID, Merchant_ID);
 This project successfully demonstrates the implementation of a **BI solution** using ClickHouse and Metabase to analyze fraud detection. By leveraging an optimized **OLTP and analytical data model**, data processing is significantly improved, and meaningful insights are generated for business decision-making.
 
 ---
-
-### Author
-*Your Name*
-
-For any queries, feel free to reach out!
 
